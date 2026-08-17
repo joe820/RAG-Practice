@@ -2,46 +2,43 @@ import os
 import certifi
 from dotenv import load_dotenv
 
-# SSL 인증서 경로 강제 지정
 os.environ['SSL_CERT_FILE'] = certifi.where()
+load_dotenv()
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from langchain_groq import ChatGroq
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-
-load_dotenv()
 
 class RAGService:
     def __init__(self, persist_dir="./chroma_db"):
         self.persist_dir = persist_dir
-        # 다국어 임베딩 모델
         self.embeddings = HuggingFaceEmbeddings(
             model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         )
-        # Groq Llama 3.3 LLM
-        self.llm = ChatGroq(model_name="llama-3.3-70b-versatile", temperature=0)
         
-        # Chroma Vector DB 로드/초기화
+        # Gemini 1.5 Flash (무료, 한국어 성능 우수, 빠른 속도)
+        self.llm = ChatGoogleGenerativeAI(
+            model="gemini-3.6-flash",
+            temperature=0,
+            google_api_key=os.getenv("GOOGLE_API_KEY")
+        )
         self.vectorstore = Chroma(
             persist_directory=self.persist_dir,
             embedding_function=self.embeddings
         )
 
     def ingest_pdf(self, file_path: str, original_filename: str = None) -> int:
-        """단일 사내규정 PDF를 파싱 및 청킹하여 Vector DB에 저장"""
         loader = PyPDFLoader(file_path)
         docs = loader.load()
         
-        # 문서 메타데이터에 파일명 기록 (예: 취업규칙.pdf, 여비교통비규정.pdf)
         if original_filename:
             for doc in docs:
                 doc.metadata['source'] = original_filename
 
-        # 사내규정 조항 및 단락 보존을 위한 1000자 청크 / 200자 오버랩
         splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
         chunks = splitter.split_documents(docs)
         
@@ -50,12 +47,11 @@ class RAGService:
         return len(chunks)
 
     def query(self, question: str, k: int = 5) -> dict:
-        """사내규정 검색 기반 질의응답"""
         retriever = self.vectorstore.as_retriever(search_kwargs={"k": k})
         docs = retriever.invoke(question)
         
         context_str = "\n\n".join([
-            f"[규정 문서: {d.metadata.get('source', '사내규정')} - {d.metadata.get('page_label', d.metadata.get('page', 'N/A'))}페이지]\n{d.page_content}"
+            f"[규정 문서: {d.metadata.get('source', '사내규정')} - {d.metadata.get('page_label', d.metadata.get('page', 1))}페이지]\n{d.page_content}"
             for d in docs
         ])
         
@@ -76,8 +72,8 @@ class RAGService:
         
         sources = [
             {
-                "document": d.metadata.get("source", "사내규정"),
-                "page": d.metadata.get("page_label", d.metadata.get("page", "N/A"))
+                "document": str(d.metadata.get("source", "사내규정")),
+                "page": str(d.metadata.get("page_label", d.metadata.get("page", "1")))
             }
             for d in docs
         ]
